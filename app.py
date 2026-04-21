@@ -1,45 +1,79 @@
+import os
+import requests
 from flask import Flask, request, jsonify
-import database
+from dotenv import load_dotenv
+from database import get_response_for_keyword, log_interaction
+
+# Lade die Geheimnisse aus der .env Datei
+load_dotenv()
 
 app = Flask(__name__)
 
-@app.route('/webhook', methods=['GET', 'POST'])
+# Konfiguration
+ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
+VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
+INSTAGRAM_ACCOUNT_ID = None # Wird beim ersten Start automatisch ermittelt
+
+def get_instagram_account_id():
+    """Ermittelt die Instagram ID, die mit der Facebook Seite verknüpft ist."""
+    url = f"https://graph.facebook.com/v19.0/me?fields=instagram_business_account&access_token={ACCESS_TOKEN}"
+    response = requests.get(url).json()
+    return response.get('instagram_business_account', {}).get('id')
+
+@app.route('/webhook', methods=['GET'])
+def verify():
+    """Webhook Verifizierung für Meta."""
+    mode = request.args.get('hub.mode')
+    token = request.args.get('hub.verify_token')
+    challenge = request.args.get('hub.challenge')
+
+    if mode == 'subscribe' and token == VERIFY_TOKEN:
+        print("WEBHOOK_VERIFIED")
+        return challenge, 200
+    return "Verification failed", 403
+
+@app.route('/webhook', methods=['POST'])
 def webhook():
-    # 1. Verifizierung für Meta (wird später wichtig)
-    if request.method == 'GET':
-        mode = request.args.get('hub.mode')
-        token = request.args.get('hub.verify_token')
-        challenge = request.args.get('hub.challenge')
-        if mode == 'subscribe' and token == 'MEIN_GEHEIMES_TOKEN':
-            return challenge, 200
-        return 'Forbidden', 403
+    """Empfängt Benachrichtigungen über neue Kommentare."""
+    data = request.json
+    
+    if data.get('object') == 'instagram':
+        for entry in data.get('entry', []):
+            for change in entry.get('changes', []):
+                if change.get('field') == 'comments':
+                    comment_id = change['value']['id']
+                    text = change['value']['text'].upper()
+                    user_id = change['value']['from']['id']
+                    media_id = change['value']['media']['id']
 
-    # 2. Logik für eingehende Kommentare
-    if request.method == 'POST':
-        data = request.json
-        print(f"Eingehendes Event: {data}")
+                    print(f"Neuer Kommentar: {text}")
 
-        # Wir simulieren hier die Extraktion der Daten aus dem JSON von Meta
-        try:
-            # In echt ist das JSON tiefer verschachtelt, das passen wir später an
-            reel_id = data.get('reel_id')
-            comment_text = data.get('text', '').upper()
-            user_id = data.get('user_id')
+                    # Datenbank nach Antwort suchen
+                    response_data = get_response_for_keyword(text, media_id)
+                    
+                    if response_data:
+                        dm_text, reply_text = response_data
+                        send_instagram_dm(user_id, dm_text)
+                        reply_to_comment(comment_id, reply_text)
+                        log_interaction(user_id, text, media_id)
 
-            # Datenbank prüfen
-            rule = database.get_rule(reel_id, comment_text)
+    return "EVENT_RECEIVED", 200
 
-            if rule:
-                dm_content, public_content = rule
-                print(f"TREFFER! Sende DM: '{dm_content}' und Reply: '{public_content}' an User {user_id}")
-                # Hier kommen später die API-Aufrufe an Meta rein
-            else:
-                print("Keine passende Regel gefunden.")
+def send_instagram_dm(recipient_id, message_text):
+    """Sendet eine Direktnachricht."""
+    url = f"https://graph.facebook.com/v19.0/me/messages?access_token={ACCESS_TOKEN}"
+    payload = {
+        "recipient": {"id": recipient_id},
+        "message": {"text": message_text}
+    }
+    requests.post(url, json=payload)
 
-        except Exception as e:
-            print(f"Fehler bei der Verarbeitung: {e}")
+def reply_to_comment(comment_id, message_text):
+    """Antwortet öffentlich auf einen Kommentar."""
+    url = f"https://graph.facebook.com/v19.0/{comment_id}/replies?access_token={ACCESS_TOKEN}"
+    payload = {"message": message_text}
+    requests.post(url, json=payload)
 
-        return "OK", 200
-
-if __name__ == "__main__":
+if __name__ == '__main__':
+    # Flask starten
     app.run(port=5000, debug=True)

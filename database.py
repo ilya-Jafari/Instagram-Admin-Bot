@@ -1,37 +1,34 @@
 import sqlite3
 
+DB_NAME = "bot_data.db"
+
 def init_db():
-    conn = sqlite3.connect('config.db')
+    conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    # Tabelle für die Automatisierungs-Regeln
-    c.execute('''CREATE TABLE IF NOT EXISTS rules
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  reel_id TEXT,
-                  keyword TEXT,
-                  dm_text TEXT,
-                  public_reply TEXT)''')
+    # Tabelle für Regeln (Keywords)
+    c.execute('''CREATE TABLE IF NOT EXISTS rules 
+                 (keyword TEXT, media_id TEXT, dm_text TEXT, reply_text TEXT)''')
+    # Tabelle für Statistiken
+    c.execute('''CREATE TABLE IF NOT EXISTS stats 
+                 (user_id TEXT, keyword TEXT, media_id TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
     conn.commit()
     conn.close()
 
-def add_rule(reel_id, keyword, dm_text, public_reply):
-    conn = sqlite3.connect('config.db')
+def get_response_for_keyword(keyword, media_id):
+    conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute("INSERT INTO rules (reel_id, keyword, dm_text, public_reply) VALUES (?, ?, ?, ?)",
-              (reel_id, keyword, dm_text, public_reply))
-    conn.commit()
-    conn.close()
-
-def get_rule(reel_id, keyword):
-    conn = sqlite3.connect('config.db')
-    c = conn.cursor()
-    # Wir suchen nach der Regel, die zur Reel-ID UND zum Keyword passt
-    c.execute("SELECT dm_text, public_reply FROM rules WHERE reel_id=? AND keyword=?", (reel_id, keyword.strip().upper()))
+    # Sucht erst nach einer Regel für das spezifische Reel, sonst allgemein
+    c.execute("SELECT dm_text, reply_text FROM rules WHERE keyword=? AND (media_id=? OR media_id='ALL')", (keyword, media_id))
     result = c.fetchone()
     conn.close()
     return result
 
-if __name__ == "__main__":
-    init_db()
-    # Beispiel-Regel hinzufügen für einen Test
-    add_rule("REEL123", "INFO", "Hier ist dein Link: https://deinlink.de", "Check deine DMs! 📩")
-    print("Datenbank bereit und Test-Regel erstellt.")
+def log_interaction(user_id, keyword, media_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("INSERT INTO stats (user_id, keyword, media_id) VALUES (?, ?, ?)", (user_id, keyword, media_id))
+    conn.commit()
+    conn.close()
+
+# Initialisiere die DB beim ersten Import
+init_db()
